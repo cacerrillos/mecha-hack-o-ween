@@ -9,7 +9,15 @@
 #include <stdio.h>
 #include <bcm2835.h>
 #include "boost/asio.hpp"
-#include <string.h>
+#include <string>
+#include <sstream>
+#include <fstream>
+#include <signal.h>
+
+#include <boost/property_tree/ptree.hpp>
+#include <boost/property_tree/json_parser.hpp>
+
+#include <boost/lexical_cast.hpp>
 
 #include "../includes/MPU9250.h"
 #include "../includes/MPU9250_Config.h"
@@ -17,17 +25,40 @@
 using namespace std;
 using namespace boost::asio;
 
+namespace pt = boost::property_tree;
+
 void setup_imu(bool calibrate_mag);
 void send_udp(string s);
+void open_udp();
+void close_udp();
 
 #define MPU9250_POWER_PIN RPI_V2_GPIO_P1_07
+
+int flag = 0;
 
 MPU9250 *imu;
 MPU9250Config* config;
 
 //#define DEBUG
 
+InterfaceEnum interface = SPI;
+
+void my_function(int sig){ // can be called asynchronously
+  flag = 1; // set flag
+}
+
+ofstream myfile;
+
+void endcon() {
+  //myfile.close();
+  close_udp();
+  imu->closeAK8963();
+  bcm2835_spi_end();
+  bcm2835_close();
+}
+
 int main() {
+  signal(SIGINT, my_function);
   config = new MPU9250Config();
 #ifdef DEBUG
   bcm2835_set_debug(1);
@@ -44,22 +75,75 @@ int main() {
 #else
   cout << "NOT ARM" << endl;
 #endif
-
-  if (!bcm2835_i2c_begin()){
-    printf("bcm2835_i2c_begin failed. Are you running as root??\n");
-    return 1;
+  if(interface == I2C) {
+    if(!bcm2835_i2c_begin()){
+      printf("bcm2835_i2c_begin failed. Are you running as root??\n");
+      return 1;
+    }
+    bcm2835_i2c_setClockDivider(BCM2835_I2C_CLOCK_DIVIDER_2500);
+    //BCM2835_I2C_CLOCK_DIVIDER_2500 100 khz i2c
+  } else if(interface == SPI) {
+    if(!bcm2835_spi_begin()){
+      printf("bcm2835_spi_begin failed. Are you running as root??\n");
+      return 1;
+    }
+    bcm2835_spi_setBitOrder(BCM2835_SPI_BIT_ORDER_MSBFIRST);
+    bcm2835_spi_setDataMode(BCM2835_SPI_MODE3);
+    bcm2835_spi_setClockDivider(BCM2835_SPI_CLOCK_DIVIDER_16);
+    bcm2835_spi_chipSelect(BCM2835_SPI_CS0);
+    bcm2835_spi_setChipSelectPolarity(BCM2835_SPI_CS0, LOW);
   }
-  bcm2835_i2c_setClockDivider(BCM2835_I2C_CLOCK_DIVIDER_2500);
-  //BCM2835_I2C_CLOCK_DIVIDER_2500 100 khz i2c
 
 
   setup_imu(false);
-
+  unsigned long long last_d;
+  last_d = bcm2835_st_read();
+  unsigned int counter = 0;
+  unsigned long long this_t;
+  //myfile.open("data.csv");
+  open_udp();
   while(true) {
-    imu->read_all();
-    printf("Accel: %f %f %f\n", imu->accelerometer_data[0], imu->accelerometer_data[1], imu->accelerometer_data[2]);
-    send_udp("yellow");
-    bcm2835_delay(500);
+    imu->read_accel_gyro();
+    this_t = bcm2835_st_read();
+    // myfile <<
+    //                   imu->accelerometer_data[0] << ", " <<
+    //                   imu->accelerometer_data[1] << ", " <<
+    //                   imu->accelerometer_data[2] << ", " <<
+    //                   imu->gyroscope_data[0] << ", " <<
+    //                   imu->gyroscope_data[1] << ", " <<
+    //                   imu->gyroscope_data[2] << endl;
+    // pt::ptree root;
+    // root.put("t", this_t);
+    // root.put("a.x", imu->accelerometer_data[0]);
+    // root.put("a.y", imu->accelerometer_data[1]);
+    // root.put("a.z", imu->accelerometer_data[2]);
+    // root.put("g.x", imu->gyroscope_data[0]);
+    // root.put("g.y", imu->gyroscope_data[1]);
+    // root.put("g.z", imu->gyroscope_data[2]);
+    // std::stringstream ss;
+    // pt::write_json(ss, root);
+    send_udp(boost::lexical_cast<string>(this_t) + ", "
+             + boost::lexical_cast<string>(imu->accelerometer_data[0]) + ", "
+             + boost::lexical_cast<string>(imu->accelerometer_data[1]) + ", "
+             + boost::lexical_cast<string>(imu->accelerometer_data[2]));
+    usleep(100);
+    counter++;
+    
+    if(this_t - last_d >= 1000000) {
+      printf("%f Hz\n", (double)counter / (this_t - last_d) * 1000000);
+      counter = 0;
+      last_d = bcm2835_st_read();
+    }
+    //printf("Accel: %f %f %f\n", imu->accelerometer_data[0], imu->accelerometer_data[1], imu->accelerometer_data[2]);
+
+    //send_udp(ss.str());
+    //send_udp(boost::lexical_cast<string>(imu->accelerometer_data[0]) + " " + boost::lexical_cast<string>(imu->accelerometer_data[1]) + " " + boost::lexical_cast<string>(imu->accelerometer_data[2]));
+    //bcm2835_delay(500);
+    if(flag){
+      printf("Quitting!\n");
+      endcon();
+      return 0;
+    }
   }
 
   while(true) {
@@ -82,9 +166,16 @@ void setup_imu(bool calibrate_mag) {
 
   usleep(250000);
   delete imu;
-  imu = new MPU9250();
+  imu = new MPU9250(SPI);
   printf("Starting IMU!\n");
-  printf("\nMPU: %02x\n", imu->whoami());
+
+  uint8_t mpu = imu->whoami();
+  printf("\nMPU: %02x\n", mpu);
+  if(mpu != 0x71) {
+    usleep(1000000);
+    setup_imu(calibrate_mag);
+    return;
+  }
   printf("Running Self Test on MPU9250!\n");
   printf("Self Test: %s \n",(imu->self_test_accel_gyro(imu->SelfTest) ? "PASSED" : "FAILED"));
 
@@ -166,19 +257,34 @@ Scale: 1.1039844751, 0.9709401727, 0.9396194816
 
 */
 }
+io_service *io_s;
+ip::udp::socket *sock;
+ip::udp::endpoint remote_endpoint;
+
+void open_udp() {
+  io_s = new io_service();
+  sock = new ip::udp::socket(*io_s);
+  
+
+  sock->open(ip::udp::v4());
+
+  remote_endpoint = ip::udp::endpoint(ip::address::from_string("192.168.0.42"), 7777);
+
+}
+
+void close_udp() {
+  sock->close();
+  delete sock;
+  delete io_s;
+}
 
 void send_udp(string s) {
-  io_service io_service;
-  ip::udp::socket socket(io_service);
-  ip::udp::endpoint remote_endpoint;
-
-  socket.open(ip::udp::v4());
-
-  remote_endpoint = ip::udp::endpoint(ip::address::from_string("192.168.0.23"), 7777);
+  
+  
 
   boost::system::error_code err;
-  socket.send_to(buffer(s, s.length()), remote_endpoint, 0, err);
+  sock->send_to(buffer(s, s.length()), remote_endpoint, 0, err);
 
-  socket.close();
+  
 
 }
