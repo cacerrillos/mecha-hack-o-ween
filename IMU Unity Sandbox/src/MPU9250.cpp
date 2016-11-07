@@ -23,7 +23,7 @@
 
 //-----------------------------------------------------------------------------------------------
 
-MPU9250::MPU9250() {
+MPU9250::MPU9250(InterfaceEnum interface) {
   Gscale = GFS_2000DPS;
   Ascale = AFS_16G;
   Mscale = MFS_16BITS;
@@ -44,6 +44,7 @@ MPU9250::MPU9250() {
   this->magCalibration[0] = 0;
   this->magCalibration[1] = 0;
   this->magCalibration[2] = 0;
+  this->interface = interface;
 }
 
 unsigned int MPU9250::WriteReg(uint8_t icAddress, uint8_t WriteAddr, uint8_t WriteData) {
@@ -54,12 +55,29 @@ unsigned int MPU9250::WriteReg(uint8_t icAddress, uint8_t WriteAddr, uint8_t Wri
   Wire.endTransmission();           // Send the Tx buffer
 #endif
 #ifdef __arm__
-
   char tx[2] = {WriteAddr, WriteData};
-  //unsigned char rx[2] = {0};
-  bcm2835_i2c_setSlaveAddress(icAddress);
-  bcm2835_i2c_write(tx, 2);
+  if(this->interface == I2C) {
+    
+    //unsigned char rx[2] = {0};
+    bcm2835_i2c_setSlaveAddress(icAddress);
+    bcm2835_i2c_write(tx, 2);
+  } else if(this->interface == SPI) {
+    char rx[2] = {0};
+    if(icAddress == AK8963_ADDRESS) {
+      WriteReg(MPU9250_ADDRESS, MPUREG_I2C_SLV0_ADDR, AK8963_I2C_ADDR);
 
+      WriteReg(MPU9250_ADDRESS, MPUREG_I2C_SLV0_REG, WriteAddr);
+      WriteReg(MPU9250_ADDRESS, MPUREG_I2C_SLV0_DO, WriteData);
+      WriteReg(MPU9250_ADDRESS, MPUREG_I2C_SLV0_CTRL, 0x81);
+
+      rx[1] = WriteReg(MPU9250_ADDRESS, MPUREG_EXT_SENS_DATA_00 | READ_FLAG, 0x00);
+      delay(100);
+    } else {
+      bcm2835_spi_transfernb(tx, rx, 2);
+    }
+    
+    return rx[1];
+  }
   //bcm2835_spi_transfernb((char*)tx, (char*)rx, 2);
   //SPIdev::transfer("/dev/spidev0.1", tx, rx, 2);
 
@@ -81,12 +99,40 @@ unsigned int  MPU9250::ReadReg(uint8_t icAddress, uint8_t WriteAddr, uint8_t Wri
   return (unsigned int)data;
 #endif
 #ifdef __arm__
-  char WriteAddr_c = WriteAddr;
-  char data;
-  bcm2835_i2c_setSlaveAddress(icAddress);
-  //bcm2835_i2c_write(tx, 2);
-  bcm2835_i2c_write_read_rs(&WriteAddr_c, 1, &data, 1);
-  return data;
+  if(this->interface == I2C) {
+    char WriteAddr_c = WriteAddr;
+    char data;
+    bcm2835_i2c_setSlaveAddress(icAddress);
+    //bcm2835_i2c_write(tx, 2);
+    bcm2835_i2c_write_read_rs(&WriteAddr_c, 1, &data, 1);
+    return data;
+  } else if(this->interface == SPI) {
+    if(icAddress == AK8963_ADDRESS) {
+      ////
+      WriteReg(MPU9250_ADDRESS, MPUREG_I2C_SLV0_ADDR, AK8963_I2C_ADDR | READ_FLAG); //Set the I2C slave addres of AK8963 and set for read.
+      WriteReg(MPU9250_ADDRESS, MPUREG_I2C_SLV0_REG, WriteAddr); //I2C slave 0 register address from where to begin data transfer
+      WriteReg(MPU9250_ADDRESS, MPUREG_I2C_SLV0_DO, WriteData);
+      WriteReg(MPU9250_ADDRESS, MPUREG_I2C_SLV0_CTRL, 0x81); //Read 1 bytes from the magnetometer
+      usleep(10000);
+
+      return ReadReg(MPU9250_ADDRESS, MPUREG_EXT_SENS_DATA_00, 0x00);
+      //ReadRegs(MPU9250_ADDRESS, MPUREG_EXT_SENS_DATA_00, rawData, 1);
+
+      ///
+      /*
+      WriteReg(MPU9250_ADDRESS, MPUREG_I2C_SLV0_ADDR, AK8963_I2C_ADDR);
+
+      WriteReg(MPU9250_ADDRESS, MPUREG_I2C_SLV0_REG, WriteAddr);
+      WriteReg(MPU9250_ADDRESS, MPUREG_I2C_SLV0_DO, WriteData);
+      WriteReg(MPU9250_ADDRESS, MPUREG_I2C_SLV0_CTRL, 0x81);
+
+      rx[1] = WriteReg(MPU9250_ADDRESS, MPUREG_EXT_SENS_DATA_00 | READ_FLAG, 0x00);
+      delay(100);
+      */
+    } else {
+      return WriteReg(MPU9250_ADDRESS, WriteAddr | READ_FLAG, WriteData);
+    }
+  }
   //return WriteReg(MPU9250_ADDRESS, WriteAddr | READ_FLAG, WriteData);
 #endif
 
@@ -105,9 +151,34 @@ void MPU9250::ReadRegs(uint8_t icAddress, uint8_t ReadAddr, uint8_t *ReadBuf, un
   }         // Put read results in the Rx buffer
 #endif
 #ifdef __arm__
-  bcm2835_i2c_setSlaveAddress(icAddress);
-  char ReadAddr_c = ReadAddr;
-  bcm2835_i2c_write_read_rs(&ReadAddr_c, 1, (char*)ReadBuf, Bytes);
+  if(this->interface == I2C) {
+    bcm2835_i2c_setSlaveAddress(icAddress);
+    char ReadAddr_c = ReadAddr;
+    bcm2835_i2c_write_read_rs(&ReadAddr_c, 1, (char*)ReadBuf, Bytes);
+  } else if(this->interface == SPI) {
+    if(icAddress == MPU9250_ADDRESS) {
+      int  i = 0;
+
+      char *tx = new char[Bytes + 1] { 0 };
+      char *rx = new char[Bytes + 1] { 0 };
+
+      tx[0] = ReadAddr | READ_FLAG;
+      bcm2835_spi_transfernb(tx, rx, Bytes + 1);
+
+      for(i=0; i<Bytes; i++) {
+        ReadBuf[i] = rx[i + 1];
+      }
+    } else {
+      WriteReg(MPU9250_ADDRESS, MPUREG_I2C_SLV0_ADDR, AK8963_I2C_ADDR | READ_FLAG); //Set the I2C slave addres of AK8963 and set for read.
+      WriteReg(MPU9250_ADDRESS, MPUREG_I2C_SLV0_REG, ReadAddr); //I2C slave 0 register address from where to begin data transfer
+      //WriteReg(MPU9250_ADDRESS, MPUREG_I2C_SLV0_DO, WriteData);
+      WriteReg(MPU9250_ADDRESS, MPUREG_I2C_SLV0_CTRL, 0x80 + Bytes); //Read 1 bytes from the magnetometer
+      usleep(10000);
+
+      ReadRegs(MPU9250_ADDRESS, MPUREG_EXT_SENS_DATA_00, ReadBuf, Bytes);
+      //ReadRegs(MPU9250_ADDRESS, MPUREG_EXT_SENS_DATA_00, rawData, 1);
+    }
+  }
   /*
   unsigned int  i = 0;
 
@@ -479,6 +550,24 @@ void MPU9250::initMPU9250() {
   WriteReg(MPU9250_ADDRESS, MPUREG_INT_ENABLE, 0x01);  // Enable data ready (bit 0) interrupt
   //WriteReg(AK8963_ADDRESS, AK8963_CNTL1, 0b00010010);
   delay(100);
+   if(this->interface == SPI) {
+    uint8_t arr[10][3] = {
+          {0x30, MPUREG_INT_PIN_CFG, 0},    //
+          {0x20, MPUREG_USER_CTRL, 0},       // I2C Master mode
+          {0x0D, MPUREG_I2C_MST_CTRL, 0}, //  I2C configuration multi-master  IIC 400KHz
+
+          {AK8963_I2C_ADDR, MPUREG_I2C_SLV0_ADDR, 0},  //Set the I2C slave addres of AK8963 and set for write.
+          {AK8963_CNTL2, MPUREG_I2C_SLV0_REG, 0}, //I2C slave 0 register address from where to begin data transfer
+          {0x01, MPUREG_I2C_SLV0_DO, 0}, // Reset AK8963
+          {0x81, MPUREG_I2C_SLV0_CTRL, 0},  //Enable I2C and set 1 byte
+          {AK8963_CNTL1, MPUREG_I2C_SLV0_REG, 0}, //I2C slave 0 register address from where to begin data transfer
+          {0x12, MPUREG_I2C_SLV0_DO, 0}, // Register value to continuous measurement in 16bit
+          {0x81, MPUREG_I2C_SLV0_CTRL, 0}};  //Enable I2C and set 1 byte 
+    for(int x = 0; x < 10; x++) {
+      WriteReg(MPU9250_ADDRESS, arr[x][1], arr[x][0]);
+      delay(100);
+    }
+  }
   /*
   {0x30, MPUREG_INT_PIN_CFG, 0},    //
           {0x20, MPUREG_USER_CTRL, 0},       // I2C Master mode
@@ -655,8 +744,22 @@ returns Factory Trim value
 
 uint8_t MPU9250::AK8963_whoami(){
     uint8_t response;
-
     response = ReadReg(AK8963_ADDRESS, WHO_AM_I_AK8963);
+    /*
+    if(interface == I2C) {
+      response = ReadReg(AK8963_ADDRESS, WHO_AM_I_AK8963);
+    } else if(interface == SPI) {
+      response = ReadReg(AK8963_ADDRESS, WHO_AM_I_AK8963);
+      return response;
+      WriteReg(MPUREG_I2C_SLV0_ADDR, AK8963_I2C_ADDR|READ_FLAG); //Set the I2C slave addres of AK8963 and set for read.
+      WriteReg(MPUREG_I2C_SLV0_REG, WHO_AM_I_AK8963); //I2C slave 0 register address from where to begin data transfer
+      WriteReg(MPUREG_I2C_SLV0_CTRL, 0x81); //Read 1 byte from the magnetometer
+
+      //WriteReg(MPUREG_I2C_SLV0_CTRL, 0x81);    //Enable I2C and set bytes
+      usleep(10000);
+      response=WriteReg(MPUREG_EXT_SENS_DATA_00|READ_FLAG, 0x00);    //Read I2C
+    }
+    */
 
     return response;
 }
@@ -680,7 +783,6 @@ void MPU9250::initAK8963(float * destination) {
     destination[i] = (float)(rawData[i] - 128)/256. + 1.;
     //magnetometer_ASA[i]=((data-128)/256+1)*Magnetometer_Sensitivity_Scale_Factor;
   }
-
   WriteReg(AK8963_ADDRESS, AK8963_CNTL1, MMODE_OFF);
   delay(10);
 
@@ -701,22 +803,22 @@ void MPU9250::magcalMPU9250(float * dest1, float * dest2, int sample_count, floa
   //usleep(3000000);
 
   for(ii = 0; ii < sample_count; ii++) {
-  read_mag();
-  //mag_temp = imu->magnetometer_data;  // Read the mag data
-  mag_temp[0] = magnetometer_data_raw[0];
-  mag_temp[1] = magnetometer_data_raw[1];
-  mag_temp[2] = magnetometer_data_raw[2];
-   sample_out[ii][0] = magnetometer_data_raw[0];
-  sample_out[ii][1] = magnetometer_data_raw[1];
-  sample_out[ii][2] = magnetometer_data_raw[2];
-  //Serial.println("%f %f %f\n", imu->magnetometer_data_raw[0], imu->magnetometer_data_raw[1], imu->magnetometer_data_raw[2]);
-  //Serial.println(ii, DEC);
-  for (int jj = 0; jj < 3; jj++) {
-    if(mag_temp[jj] > mag_max[jj]) mag_max[jj] = mag_temp[jj];
-    if(mag_temp[jj] < mag_min[jj]) mag_min[jj] = mag_temp[jj];
+    read_mag();
+    //mag_temp = imu->magnetometer_data;  // Read the mag data
+    mag_temp[0] = magnetometer_data_raw[0];
+    mag_temp[1] = magnetometer_data_raw[1];
+    mag_temp[2] = magnetometer_data_raw[2];
+    sample_out[ii][0] = magnetometer_data_raw[0];
+    sample_out[ii][1] = magnetometer_data_raw[1];
+    sample_out[ii][2] = magnetometer_data_raw[2];
+    //Serial.println("%f %f %f\n", imu->magnetometer_data_raw[0], imu->magnetometer_data_raw[1], imu->magnetometer_data_raw[2]);
+    //Serial.println(ii, DEC);
+    for (int jj = 0; jj < 3; jj++) {
+      if(mag_temp[jj] > mag_max[jj]) mag_max[jj] = mag_temp[jj];
+      if(mag_temp[jj] < mag_min[jj]) mag_min[jj] = mag_temp[jj];
     }
     delay(135);
-  //usleep(135000);  // at 8 Hz ODR, new mag data is available every 125 ms
+    //usleep(135000);  // at 8 Hz ODR, new mag data is available every 125 ms
   }
 
   // Get hard iron correction
@@ -772,6 +874,11 @@ void MPU9250::read_mag(){
 }
 
 //-----------------------------------------------------------------------------------------------
+
+void MPU9250::read_accel_gyro() {
+  read_acc();
+  read_gyro();
+}
 
 void MPU9250::read_all() {
   getAres();

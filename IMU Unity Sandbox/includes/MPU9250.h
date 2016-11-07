@@ -12,9 +12,42 @@ using namespace std;
 
 #include <stdint.h>
 
+enum Ascale {
+  AFS_2G = 0,
+  AFS_4G,
+  AFS_8G,
+  AFS_16G
+};
+
+enum Gscale {
+  GFS_250DPS = 0,
+  GFS_500DPS,
+  GFS_1000DPS,
+  GFS_2000DPS
+};
+
+enum Mscale {
+  MFS_14BITS = 0, // 0.6 mG per LSB
+  MFS_16BITS      // 0.15 mG per LSB
+};
+enum Mmodes {
+  MMODE_OFF = 0b0000,
+  MMODE_SINGLE = 0b0001,
+  MMODE_CONTINUOUS_1 = 0b0010,
+  MMODE_CONTINUOUS_2 = 0b0110,
+  MMODE_EXTERNAL_TRIGGER = 0b0100,
+  MMODE_SELF_TEST = 0b1000,
+  MMODE_FUSE_ROM_ACCESS = 0b1111
+};
+
+enum InterfaceEnum {
+  I2C,
+  SPI
+};
+
 class MPU9250 {
 public:
-    MPU9250();
+    MPU9250(InterfaceEnum interface = I2C);
     bool self_test_accel_gyro(float* destination);
 
     void initMPU9250();
@@ -35,6 +68,7 @@ public:
     void read_temp();
     void read_acc();
     void read_gyro();
+    void read_accel_gyro();
     void read_mag();
     void read_all();
 
@@ -69,6 +103,7 @@ public:
     uint8_t magnetometer_status;
 
   private:
+    InterfaceEnum interface;
     float _error;
     void delay(unsigned long x) {
 #ifdef ARDUINO
@@ -262,33 +297,6 @@ public:
 
 #define READ_FLAG   0x80
 
-enum Ascale {
-  AFS_2G = 0,
-  AFS_4G,
-  AFS_8G,
-  AFS_16G
-};
-
-enum Gscale {
-  GFS_250DPS = 0,
-  GFS_500DPS,
-  GFS_1000DPS,
-  GFS_2000DPS
-};
-
-enum Mscale {
-  MFS_14BITS = 0, // 0.6 mG per LSB
-  MFS_16BITS      // 0.15 mG per LSB
-};
-enum Mmodes {
-  MMODE_OFF = 0b0000,
-  MMODE_SINGLE = 0b0001,
-  MMODE_CONTINUOUS_1 = 0b0010,
-  MMODE_CONTINUOUS_2 = 0b0110,
-  MMODE_EXTERNAL_TRIGGER = 0b0100,
-  MMODE_SELF_TEST = 0b1000,
-  MMODE_FUSE_ROM_ACCESS = 0b1111
-};
 /* ---- Sensitivity --------------------------------------------------------- */
 
 #define MPU9250A_2g       ((float)0.000061035156f) // 0.000061035156 g/LSB
